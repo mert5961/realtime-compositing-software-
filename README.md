@@ -12,9 +12,21 @@ A portable C++20 prototype for the scheduler and frame storage described in the 
 - A deterministic 120-tick simulation: 60 FPS camera, 30 FPS scene, a scene stall on ticks 44–69, and an injected deadline miss on tick 95. Rejected work repeats the last completed composite.
 - A CSV trace and a final PPM image. The simulation runs as fast as the CPU allows; it does **not** pace a display in real time or benchmark end-to-end latency.
 
-There is no Blender connection, GPU execution, camera capture, key extraction, AI, or graphical editor yet. The demo uses synthetic display RGB and straight alpha; the blend is intentionally not a production color-managed operation.
+The portable demo uses synthetic display RGB and straight alpha; its blend is not a production color-managed operation. Separate Windows tools provide live AJA capture/playout and a Blender-to-GPU texture-sharing prototype. Key extraction, AI, and integration of those two live paths remain future work.
 
 ## Windows
+
+### Blender GPU texture test
+
+The Blender add-on renders a camera to an OpenGL offscreen framebuffer and
+shares it with a native Direct3D 11 preview through Spout. This path keeps
+frame pixels on the GPU, with CPU fallback disabled. The receiver shows frame
+counts, skipped sender frames, receive-call timings, and saves CSV logs.
+
+Run `powershell -ExecutionPolicy Bypass -File .\setup-blender.ps1` to build.
+See [BLENDER_TEXTURES.md](BLENDER_TEXTURES.md) for installation, launch commands,
+buffer ownership, validation results, and prototype limitations. This receiver
+does not yet composite with the SDI camera or send Blender images to AJA.
 
 ### Live AJA SDI test UI
 
@@ -184,4 +196,4 @@ The scheduler chooses the freshest eligible image independently from each source
 
 ## Next milestone
 
-Prototype the Blender frame exchange on Windows early, then add a GPU surface implementation with explicit synchronization and a display output clock. Preserve these ownership and scheduling semantics while validating actual transfer cost. Introduce advanced keying after the full frame path is measurable and stable.
+Integrate the Windows Blender GPU texture receiver with the compositor's scheduling and GPU surface ownership, then connect the AJA capture/playout path. Validate synchronization, color format, transfer costs, and output deadlines before introducing advanced keying.
