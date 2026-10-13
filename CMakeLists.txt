@@ -1,0 +1,27 @@
+cmake_minimum_required(VERSION 3.20)
+project(RealtimeCompositor VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+find_package(Threads REQUIRED)
+
+add_library(compositor_core src/core.cpp)
+target_include_directories(compositor_core PUBLIC include)
+target_link_libraries(compositor_core PUBLIC Threads::Threads)
+if(MSVC)
+    target_compile_options(compositor_core PUBLIC /W4 /permissive- /EHsc)
+else()
+    target_compile_options(compositor_core PUBLIC -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(compositor_demo src/main.cpp)
+target_link_libraries(compositor_demo PRIVATE compositor_core)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(compositor_tests tests/core_tests.cpp)
+    target_link_libraries(compositor_tests PRIVATE compositor_core)
+    add_test(NAME compositor_core_tests COMMAND compositor_tests)
+    add_test(NAME compositor_demo_scenario COMMAND compositor_demo "${CMAKE_CURRENT_BINARY_DIR}/demo-output")
+endif()
