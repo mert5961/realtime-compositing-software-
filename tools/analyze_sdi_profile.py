@@ -13,29 +13,34 @@ def percentile(values, fraction):
 def analyze(trace_path, warmup):
     sample_path = trace_path.with_name(trace_path.name.replace("-trace.csv", ".csv"))
     summary_path = trace_path.with_name(trace_path.name.replace("-trace.csv", "-profile.csv"))
-    with sample_path.open(newline="") as stream:
-        samples = list(csv.DictReader(stream))
-    last = samples[-1]
+    samples = []
+    if sample_path.exists():
+        with sample_path.open(newline="") as stream:
+            samples = list(csv.DictReader(stream))
+    last = samples[-1] if samples else None
     route = ""
-    if "input_frame_store" in last:
+    if last and "input_frame_store" in last:
         route = (f"SDI {last['input_sdi']} → {last['output_sdi']}; "
                  f"frame stores {last['input_frame_store']} → {last['output_frame_store']}. ")
     with trace_path.open(newline="") as stream:
         events = [row for row in csv.DictReader(stream)
                   if row["shutdown"] == "0" and float(row["end_seconds"]) >= warmup]
-    with summary_path.open(newline="") as stream:
-        summary = list(csv.DictReader(stream))
+    summary = []
+    if summary_path.exists():
+        with summary_path.open(newline="") as stream:
+            summary = list(csv.DictReader(stream))
     discarded = next((row["count"] for row in summary if row["event"] == "trace_discarded"), "unknown")
     grouped = defaultdict(list)
     failures = defaultdict(int)
     for row in events:
         grouped[row["event"]].append(float(row["duration_ms"]))
         failures[row["event"]] += row["success"] == "0"
-    lines = [f"### {trace_path.stem}", "",
-             route + f"Card buffers {last['input_capacity']}/{last['output_capacity']}; "
+    description = (route + f"Card buffers {last['input_capacity']}/{last['output_capacity']}; "
              f"duration {last['seconds']} s; capture/output drops "
              f"{last['input_drops']}/{last['output_drops']}; "
-             f"host peak {last['host_peak']}/10; discarded trace events {discarded}.", "",
+             f"host peak {last['host_peak']}/10; discarded trace events {discarded}."
+             if last else f"No samples collected; trace evidence retained. Discarded events: {discarded}.")
+    lines = [f"### {trace_path.stem}", "", description, "",
              f"Timing statistics exclude the first {warmup:g} second(s) and shutdown. "
              "Counts and drop totals above include startup.", "",
              "| Operation | Calls | Avg ms | P95 ms | Max ms | >20 ms | Failed |",

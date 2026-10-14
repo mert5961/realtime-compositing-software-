@@ -32,6 +32,7 @@ std::mutex sampleMutex;
 Sample sample;
 std::atomic<bool> running{false}, stopRequested{false};
 std::thread worker;
+std::atomic<bool> runSucceeded{false};
 HWND deviceBox, inputBox, outputBox, inputBuffersBox, outputBuffersBox, startButton, stopButton, statusText, trackingText, profileText;
 SOCKET trackingSocket = INVALID_SOCKET;
 uint64_t packets = 0, bytes = 0;
@@ -96,6 +97,7 @@ std::string probe() {
 void runTest(std::string device, unsigned input, unsigned output, unsigned duration = 0,
              unsigned inputBuffers = 4, unsigned outputBuffers = 4) {
     running = true;
+    runSucceeded = false;
     try {
         if (inputBuffers < 3 || inputBuffers > 7 || outputBuffers < 3 || outputBuffers > 7) {
             state("Device buffer counts must be between 3 and 7."); running = false; return;
@@ -160,6 +162,7 @@ void runTest(std::string device, unsigned input, unsigned output, unsigned durat
         const auto started = sdi_profile::started;
         auto previous = started;
         ULWord previousInput = 0, previousOutput = 0;
+        bool completed = false, failed = false;
         while (!stopRequested) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             AUTOCIRCULATE_STATUS in, out;
@@ -190,17 +193,20 @@ void runTest(std::string device, unsigned input, unsigned output, unsigned durat
             for (const auto& metric : next.timings) csv << ',' << metric.count << ',' << metric.averageMs << ',' << metric.maxMs << ',' << metric.failures;
             csv << '\n';
             csv.flush();
-            if (!csv) { next.state = "CSV write failed. Test stopped."; stopRequested = true; }
+            if (!csv) { next.state = "CSV write failed. Test stopped."; stopRequested = true; failed = true; }
             { std::lock_guard lock(sampleMutex); sample = next; }
             previous = now; previousInput = next.captured; previousOutput = next.played;
             if (next.seconds >= 5 && (!next.captured || !next.played)) {
-                state("Capture/playout did not start within 5 seconds. Check output/sdi-test.log."); break;
+                state("Capture/playout did not start within 5 seconds. Check output/sdi-test.log."); failed = true; break;
             }
-            if (!signalOk || (duration && next.seconds >= duration)) break;
+            if (!signalOk) { failed = true; break; }
+            if (duration && next.seconds >= duration) { completed = true; break; }
         }
         sdi_profile::stopping = true;
         burn.Quit(); // Join frame threads before saving the preallocated event traces.
-        if (!sdi_profile::dump(path.substr(0,path.size()-4))) state("Stopped, but profiling logs could not be saved.");
+        if (!sdi_profile::dump(path.substr(0,path.size()-4))) { state("Stopped, but profiling logs could not be saved."); failed = true; }
+        failed = failed || sdi_profile::view(sdi_profile::Kind::CaptureDma).failures != 0 || sdi_profile::view(sdi_profile::Kind::OutputDma).failures != 0;
+        runSucceeded = !failed && (!duration || completed) && previousInput && previousOutput;
     } catch (const std::exception& error) { state(std::string("Test failed: ") + error.what()); }
     { std::lock_guard lock(sampleMutex);
       if (sample.state.rfind("Running", 0) == 0 || sample.state == "Stopping...") sample.state = "Stopped. Final counters retained; CSV saved."; }
@@ -417,7 +423,7 @@ int main(int argc, char** argv) {
         unsigned outputBuffers = argc == 8 ? unsigned(std::stoul(argv[7])) : 4;
         stopRequested = false; runTest(argv[2],unsigned(std::stoul(argv[3])-1),unsigned(std::stoul(argv[4])-1),unsigned(std::stoul(argv[5])),inputBuffers,outputBuffers);
         std::cout << sample.state << "\nCaptured=" << sample.captured << " Played=" << sample.played << " InputDrops=" << sample.inputDrops << " OutputDrops=" << sample.outputDrops << " HostPeak=" << sample.hostPeak << " CSV=" << sample.csv << '\n';
-        std::cerr.rdbuf(oldError); WSACleanup(); return sample.captured && sample.played ? 0 : 1;
+        std::cerr.rdbuf(oldError); WSACleanup(); return runSucceeded ? 0 : 1;
     }
     FreeConsole();
     WNDCLASSA cls{}; cls.lpfnWndProc = windowProc; cls.hInstance = GetModuleHandle(nullptr);
