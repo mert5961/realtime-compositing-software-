@@ -12,7 +12,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Configuration failed' }
 cmake --build build/blender --config Release --target blender_texture_test blender_spout_bridge -j 8
 if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 New-Item -ItemType Directory -Force build/blender-addon/realtime_spout | Out-Null
-Copy-Item blender/realtime_spout/__init__.py build/blender-addon/realtime_spout/
+Copy-Item blender/realtime_spout/*.py build/blender-addon/realtime_spout/
 Copy-Item build/blender/Release/blender_spout_bridge.dll build/blender-addon/realtime_spout/
 Copy-Item build/blender/Release/Spout-LICENSE.txt build/blender-addon/realtime_spout/
 Compress-Archive -Path build/blender-addon/realtime_spout -DestinationPath build/blender/realtime_spout.zip -Force

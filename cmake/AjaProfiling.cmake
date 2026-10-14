@@ -27,9 +27,17 @@ aja_hook("mFrameDataRing.StartProduceNextBuffer ()" "sdi_profile::acquire(sdi_pr
 aja_hook("mFrameDataRing.StartConsumeNextBuffer()" "sdi_profile::acquire(sdi_profile::Kind::OutputHostWait, 3, [&] { return mFrameDataRing.StartConsumeNextBuffer(); })")
 aja_hook("mDevice.AutoCirculateTransfer (mConfig.fInputChannel, inputXferInfo)" "sdi_profile::timed(sdi_profile::Kind::CaptureDma, [&] { return mDevice.AutoCirculateTransfer (mConfig.fInputChannel, inputXferInfo); })")
 aja_hook("mDevice.AutoCirculateTransfer (mConfig.fOutputChannel, outputXferInfo)" "sdi_profile::timed(sdi_profile::Kind::OutputDma, [&] { return mDevice.AutoCirculateTransfer (mConfig.fOutputChannel, outputXferInfo); })")
-aja_hook("else badXfers++;" "else badXfers++; const auto profileProcessingStart = sdi_profile::Clock::now();")
+aja_hook("else badXfers++;" "else { badXfers++; sdi_profile::setValid(pFrameData,false); sdi_profile::stage(pFrameData,2); mFrameDataRing.EndProduceNextBuffer (); continue; } sdi_profile::setValid(pFrameData,true); const auto profileProcessingStart = sdi_profile::Clock::now();")
+# Release invalid slots through the normal consumer protocol. Never playout
+# bytes left by a failed/partial capture DMA or leak a producer reservation.
+aja_hook("{starves++;  continue;}" "{starves++; continue;} if (!sdi_profile::isValid(pFrameData)) { sdi_profile::stage(pFrameData,0); mFrameDataRing.EndConsumeNextBuffer(); continue; }")
 aja_hook("mFrameDataRing.EndProduceNextBuffer();" "sdi_profile::record(sdi_profile::Kind::Processing, profileProcessingStart); sdi_profile::stage(pFrameData, 2); sdi_profile::record(sdi_profile::Kind::HostPublish, sdi_profile::Clock::now()); mFrameDataRing.EndProduceNextBuffer();")
 aja_hook("mFrameDataRing.EndConsumeNextBuffer ();" "sdi_profile::stage(pFrameData, 0); sdi_profile::record(sdi_profile::Kind::HostRelease, sdi_profile::Clock::now()); mFrameDataRing.EndConsumeNextBuffer ();")
 aja_hook("mDevice.WaitForInputFieldID (NTV2_FIELD0, mConfig.fInputChannel);" "sdi_profile::timed(sdi_profile::Kind::InputDeviceWait, [&] { return mDevice.WaitForInputFieldID (NTV2_FIELD0, mConfig.fInputChannel); });")
 aja_hook("mDevice.WaitForOutputVerticalInterrupt(mConfig.fOutputChannel);" "sdi_profile::timed(sdi_profile::Kind::OutputDeviceWait, [&] { return mDevice.WaitForOutputVerticalInterrupt(mConfig.fOutputChannel); });")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/aja-burn.cpp" "#include \"sdi_profile.hpp\"\n${_aja_burn}")
+# Expose the existing virtual adapter's state to the studio subclass in a
+# generated header. Downloaded SDK remains untouched; no object layout change.
+file(READ "${AJA_SDK_DIR}/demos/ntv2burn/ntv2burn.h" _aja_header)
+string(REPLACE "\tprivate:" "\tprotected:" _aja_header "${_aja_header}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ntv2burn.h" "${_aja_header}")

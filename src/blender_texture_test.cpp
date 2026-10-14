@@ -208,7 +208,8 @@ int run(const Options& options) {
     unsigned long long frames=0, skipped=0, sampleFrames=0, calls=0, generation=0;
     double totalMs=0, maxMs=0;
     long previousFrame=0;
-    bool connected=false, counted=false, quit=false, snapshotSaved=false;
+    bool connected=false, counted=false, quit=false, snapshotSaved=false, valid=false;
+    unsigned generationFrames=0;
     UINT sourceWidth=0, sourceHeight=0;
     timeBeginPeriod(1);
     struct TimerCleanup { ~TimerCleanup() { timeEndPeriod(1); } } timerCleanup;
@@ -229,25 +230,28 @@ int run(const Options& options) {
         const double ms = seconds(Clock::now()-before)*1000;
         ++calls; totalMs+=ms; maxMs=std::max(maxMs,ms);
         const bool updated = receiver.IsUpdated(); // Required to clear the SDK's update latch.
-        if (updated) { preview.setTexture(nullptr); previousFrame=0; ++generation; }
+        if (updated) { preview.setTexture(nullptr); previousFrame=0; valid=false; ++generation; generationFrames=0; }
         connected=ok && receiver.IsConnected();
         if (connected) {
             sourceWidth=receiver.GetSenderWidth(); sourceHeight=receiver.GetSenderHeight();
             auto* texture = receiver.GetSenderTexture();
-            if (texture && (updated || (!preview.image && previewWindow))) preview.setTexture(texture);
             const long frame = receiver.GetSenderFrame();
             counted = receiver.IsFrameCountEnabled() && frame > 0;
             if (texture && counted && receiver.IsFrameNew() && frame != previousFrame) {
+                if (!valid) { preview.setTexture(texture); valid=true; }
                 if (counted && previousFrame > 0 && frame > previousFrame)
                     skipped += static_cast<unsigned long long>(frame-previousFrame-1);
                 if (counted && previousFrame > 0 && frame < previousFrame) ++generation;
                 previousFrame=frame; ++frames; lastNew=Clock::now();
-                if (!snapshotSaved && !options.snapshot.empty() && frames >= 5) {
-                    preview.saveSnapshot(texture,options.snapshot); snapshotSaved=true;
+                if (!options.snapshot.empty() && ++generationFrames == 5) {
+                    auto phasePath=options.snapshot.parent_path()/(options.snapshot.stem().string()+"-gen"+std::to_string(generation)+".ppm");
+                    preview.saveSnapshot(texture,phasePath);
+                    if (!snapshotSaved) preview.saveSnapshot(texture,options.snapshot);
+                    snapshotSaved=true;
                 }
             }
         } else {
-            preview.setTexture(nullptr); previousFrame=0; counted=false; sourceWidth=sourceHeight=0;
+            preview.setTexture(nullptr); previousFrame=0; valid=false; counted=false; sourceWidth=sourceHeight=0;
         }
         const auto now=Clock::now();
         const double elapsed=seconds(now-start), interval=seconds(now-sampled);

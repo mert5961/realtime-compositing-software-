@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Realtime Compositor Spout Sender",
     "author": "Realtime Compositor contributors",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (4, 5, 0),
     "location": "3D View > Sidebar > Realtime",
     "description": "Share an offscreen camera frame through native GPU Spout interop",
@@ -14,10 +14,15 @@ import time
 
 import bpy
 import gpu
-from bpy.props import IntProperty, StringProperty
+from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
+from mathutils import Matrix
+from . import traxis
+import math
 
 _active = None
 _bridge = None
+_faulted = None
+_validation_phase = 0
 
 
 def bridge():
@@ -32,6 +37,14 @@ def bridge():
         _bridge.blender_spout_stop.restype = ctypes.c_int
         _bridge.blender_spout_error.argtypes = []
         _bridge.blender_spout_error.restype = ctypes.c_char_p
+        _bridge.blender_spout_name.argtypes = []
+        _bridge.blender_spout_name.restype = ctypes.c_char_p
+        _bridge.blender_spout_pattern.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
+        _bridge.blender_spout_pattern.restype = ctypes.c_int
+        _bridge.blender_spout_clock.argtypes = []
+        _bridge.blender_spout_clock.restype = ctypes.c_uint64
+        _bridge.blender_spout_send_tagged.argtypes = [ctypes.c_uint,ctypes.c_uint,ctypes.c_uint64,ctypes.c_uint64]
+        _bridge.blender_spout_send_tagged.restype = ctypes.c_int
     return _bridge
 
 
@@ -45,6 +58,10 @@ class RealtimeSettings(bpy.types.PropertyGroup):
     height: IntProperty(name="Height", default=1080, min=64, max=2160)
     fps: IntProperty(name="Target FPS", default=50, min=1, max=120)
     status: StringProperty(default="Stopped")
+    tracking: BoolProperty(name="TraxisHubTrack camera", default=False)
+    tracking_port: IntProperty(name="UDP port", default=8873,min=1,max=65535)
+    tracking_scale: FloatProperty(name="Units to meters",default=.01,min=.000001,max=100)
+    tracking_status: StringProperty(default="Tracking disabled")
 
 
 class REALTIME_OT_start(bpy.types.Operator):
@@ -55,6 +72,7 @@ class REALTIME_OT_start(bpy.types.Operator):
     _offscreen = None
     _started = False
     _drawing = False
+    _tracking = None
     stop_requested = False
 
     def execute(self, context):
@@ -75,9 +93,21 @@ class REALTIME_OT_start(bpy.types.Operator):
         self._area = context.area
         self._window = context.window
         self._scene = context.scene
+        self._manager = context.window_manager
+        self._screen = context.window.screen
         settings = self._scene.realtime_spout
         self._width, self._height, self._fps = settings.width, settings.height, settings.fps
         self._name = settings.sender
+        self._tracking = None
+        self._tracking_scale = settings.tracking_scale
+        self.tracking_sample = None
+        self._tracking_ns = 1 if settings.tracking else 0  # 1 = required but no valid sample yet.
+        if settings.tracking:
+            try:
+                self._tracking = traxis.Receiver(settings.tracking_port, bridge().blender_spout_clock)
+            except OSError as error:
+                self.report({'ERROR'}, f'Tracking port unavailable: {error}')
+                return {'CANCELLED'}
         self.frames = 0
         self.skipped = 0
         self.render_ms = self.send_ms = 0.0
@@ -93,14 +123,21 @@ class REALTIME_OT_start(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def draw_frame(self):
-        if self._drawing or bpy.context.area != self._area:
+        if self._drawing:
+            return
+        if self.stop_requested:
+            self.finish()
+            return
+        if bpy.context.area != self._area:
             return
         self._drawing = True
         try:
-            if self.stop_requested:
-                self.release_gpu()
-                self._done = True
-                return
+            global _faulted
+            if _faulted is not None:
+                if _faulted._window != bpy.context.window or _faulted._screen != bpy.context.window.screen:
+                    raise RuntimeError('Return to the original window/workspace to recover GPU resources')
+                _faulted.release_gpu()  # Context checked natively; retry only if safe.
+                _faulted = None
             now = time.perf_counter()
             if now < self._next:
                 return
@@ -111,20 +148,41 @@ class REALTIME_OT_start(bpy.types.Operator):
             camera = self._scene.camera
             if camera is None:
                 raise RuntimeError("Scene camera was removed")
+            if self._tracking:
+                sample = self._tracking.sample()
+                if sample:
+                    packet,received,sequence,peer = sample
+                    age = (bridge().blender_spout_clock()-received)/1e6
+                    self._scene.realtime_spout.tracking_status = f'THT #{sequence} | {age:.0f} ms | FOV {packet["effectiveFov"]:.2f}'
+                    if age <= 500:
+                        camera.matrix_world = Matrix(traxis.camera_matrix(packet,self._tracking_scale))
+                        camera.data.sensor_fit = 'HORIZONTAL'
+                        camera.data.sensor_width = packet['sensorSizeX']
+                        camera.data.sensor_height = packet['sensorSizeY']
+                        camera.data.lens = packet['sensorSizeX']/(2*math.tan(math.radians(packet['effectiveFov'])/2))
+                        self._tracking_ns = received
+                        self.tracking_sample = sample
+                        context.view_layer.update()
+                else:
+                    self._scene.realtime_spout.tracking_status = 'Waiting for valid THT JSON'
             evaluated = camera.evaluated_get(context.evaluated_depsgraph_get())
             projection = evaluated.calc_matrix_camera(context.evaluated_depsgraph_get(),
                 x=self._width, y=self._height,
                 scale_x=self._scene.render.pixel_aspect_x, scale_y=self._scene.render.pixel_aspect_y)
             render_start = time.perf_counter()
+            render_begin_ns = bridge().blender_spout_clock()
             self._offscreen.draw_view3d(self._scene, context.view_layer, context.space_data, context.region,
                 evaluated.matrix_world.inverted(), projection, do_color_management=True, draw_background=True)
             send_start = time.perf_counter()
             with self._offscreen.bind():
+                if _validation_phase:
+                    bridge().blender_spout_pattern(self._width, self._height, _validation_phase)
                 if not self._started:
                     if not bridge().blender_spout_start(self._name.encode('utf-8')):
                         raise RuntimeError(native_error())
                     self._started = True
-                result = bridge().blender_spout_send(self._width, self._height)
+                    self._name = bridge().blender_spout_name().decode('utf-8')
+                result = bridge().blender_spout_send_tagged(self._width,self._height,render_begin_ns,self._tracking_ns)
                 if not result:
                     raise RuntimeError(native_error())
             end = time.perf_counter()
@@ -137,8 +195,7 @@ class REALTIME_OT_start(bpy.types.Operator):
         except Exception as error:
             self._scene.realtime_spout.status = f"Error: {error}"
             print(f"Realtime Spout: {error}", flush=True)
-            self.release_gpu()
-            self._done = True
+            self.finish(fault=True)
         finally:
             self._drawing = False
 
@@ -149,24 +206,67 @@ class REALTIME_OT_start(bpy.types.Operator):
                 raise RuntimeError(native_error())
             self._started = False
         if self._offscreen is not None:
-            self._offscreen.free()
-            self._offscreen = None
+            try:
+                self._offscreen.free()
+            except ReferenceError:
+                pass  # Blender already invalidated this offscreen object.
+            finally:
+                self._offscreen = None
 
     def modal(self, context, event):
-        global _active
         if self._done:
-            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
-            context.window_manager.event_timer_remove(self._timer)
-            if self.stop_requested:
-                self._scene.realtime_spout.status = "Stopped"
-            _active = None
             return {'FINISHED'}
         if event.type == 'TIMER':
+            try:
+                origin_available = self._window.screen == self._screen and self._area.type == 'VIEW_3D'
+            except ReferenceError:
+                origin_available = False
+            if self.stop_requested or not origin_available:
+                self.finish()
+                return {'FINISHED'}
             if self.frames:
                 self._scene.realtime_spout.status = (
                     f"GPU | {self.frames} frames | render {self.render_ms:.2f} ms | send {self.send_ms:.2f} ms")
             self._area.tag_redraw()
         return {'PASS_THROUGH'}
+
+    def finish(self, fault=False):
+        global _active, _faulted
+        if self._done:
+            return
+        message = "Stopped"
+        try:
+            self.release_gpu()
+        except Exception as error:
+            _faulted = self  # Keep ownership, never free GL resources in a wrong context.
+            message = f"Faulted: {error}. Return to original viewport to retry; restart Blender if its context was lost."
+        finally:
+            if self._tracking is not None:
+                self._tracking.close()
+                self._tracking = None
+            self._done = True
+            if self._handle is not None:
+                try:
+                    bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
+                except (ValueError, ReferenceError):
+                    pass
+                self._handle = None
+            if self._timer is not None:
+                try:
+                    self._manager.event_timer_remove(self._timer)
+                except (ValueError, ReferenceError):
+                    pass
+                self._timer = None
+            if _active is self:
+                _active = None
+            try:
+                if not fault or _faulted is self:
+                    self._scene.realtime_spout.status = message
+            except (ReferenceError, AttributeError):
+                pass
+
+    def cancel(self, context):
+        self.finish()
 
 
 class REALTIME_OT_stop(bpy.types.Operator):
@@ -197,11 +297,16 @@ class REALTIME_PT_sender(bpy.types.Panel):
         row.prop(settings, "width")
         row.prop(settings, "height")
         column.prop(settings, "fps")
+        column.prop(settings, "tracking")
+        if settings.tracking:
+            column.prop(settings, "tracking_port")
+            column.prop(settings, "tracking_scale")
         if _active is None:
             layout.operator("realtime_spout.start")
         else:
             layout.operator("realtime_spout.stop")
         layout.label(text=settings.status)
+        layout.label(text=settings.tracking_status)
         layout.label(text="OpenGL GPU sharing; CPU fallback disabled")
         layout.label(text="Display color / RGBA8 camera preview")
 
@@ -213,11 +318,21 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.realtime_spout = bpy.props.PointerProperty(type=RealtimeSettings)
+    if before_load not in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.append(before_load)
 
 
 def unregister():
     if _active is not None:
-        raise RuntimeError("Stop sharing before disabling this add-on")
+        _active.finish()
+    if before_load in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.remove(before_load)
     del bpy.types.Scene.realtime_spout
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+
+
+@bpy.app.handlers.persistent
+def before_load(_):
+    if _active is not None:
+        _active.finish()

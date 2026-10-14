@@ -23,7 +23,7 @@ struct View {
 };
 struct Host { unsigned capture = 0, ready = 0, output = 0;
     unsigned occupied() const { return capture + ready + output; } };
-struct Slot { const void* frame = nullptr; std::atomic<unsigned> stage{0}; };
+struct Slot { const void* frame = nullptr; std::atomic<unsigned> stage{0}; std::atomic<bool> valid{false}; };
 struct Event {
     uint64_t endNs, durationNs;
     Kind kind;
@@ -44,11 +44,18 @@ inline Clock::time_point started;
 
 inline void reset() {
     for (auto& metric : metrics) { metric.count = 0; metric.totalNs = 0; metric.maxNs = 0; metric.failures = 0; }
-    for (auto& slot : slots) { slot.frame = nullptr; slot.stage = 0; }
+    for (auto& slot : slots) { slot.frame = nullptr; slot.stage = 0; slot.valid = false; }
     for (auto& trace : lanes) { trace.count = 0; trace.discarded = 0; }
     slotCount = 0; hostPeak = 0; stopping = false; started = Clock::now();
 }
 inline void registerFrame(const void* frame) { if (slotCount < slots.size()) slots[slotCount++].frame = frame; }
+inline void setValid(const void* frame, bool valid) {
+    for (auto& slot : slots) if (slot.frame == frame) { slot.valid.store(valid); return; }
+}
+inline bool isValid(const void* frame) {
+    for (auto& slot : slots) if (slot.frame == frame) return slot.valid.load();
+    return false;
+}
 inline void stage(const void* frame, unsigned value) {
     for (auto& slot : slots) if (slot.frame == frame) { slot.stage.store(value, std::memory_order_relaxed); return; }
 }

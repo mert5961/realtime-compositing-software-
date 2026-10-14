@@ -4,6 +4,9 @@ import bpy
 
 root = Path(__file__).resolve().parents[1]
 archive = root / "build/blender/realtime_spout.zip"
+studio_archive = root / "build/studio/realtime_spout.zip"
+if studio_archive.exists():
+    archive = studio_archive
 bpy.ops.preferences.addon_install(filepath=str(archive), overwrite=True)
 bpy.ops.preferences.addon_enable(module="realtime_spout")
 bpy.ops.wm.save_userpref()

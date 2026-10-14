@@ -9,7 +9,10 @@ import time
 import bpy
 
 root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(root / "build/blender-addon"))
+addon_dir = root / "build/studio-addon"
+if not addon_dir.exists():
+    addon_dir = root / "build/blender-addon"
+sys.path.insert(0, str(addon_dir))
 import realtime_spout
 realtime_spout.register()
 scene = bpy.context.scene
@@ -26,6 +29,14 @@ if cube:
 scene.frame_set(1)
 started = time.monotonic()
 validation = '--validate' in sys.argv
+studio = '--studio' in sys.argv
+placed_studio = False
+if studio:
+    scene.realtime_spout.sender = 'RealtimeStudio'
+    scene.realtime_spout.tracking = True
+if validation:
+    scene.realtime_spout.sender = "RealtimeValidation"
+    realtime_spout._validation_phase = 1
 phase = 0
 
 
@@ -46,13 +57,25 @@ def start():
 
 
 def report():
-    global phase
+    global phase, placed_studio
     active = realtime_spout._active
     data = {"blender": bpy.app.version_string, "status": scene.realtime_spout.status,
             "elapsed_s": time.monotonic()-started, "frames": active.frames if active else 0,
             "render_api_ms": active.render_ms if active else 0,
             "send_api_ms": active.send_ms if active else 0}
-    (root / "output/blender-sender-status.json").write_text(json.dumps(data, indent=2))
+    if active and active.tracking_sample:
+        packet, received, sequence, peer = active.tracking_sample
+        data['tracking'] = {'packet':packet,'received_ns':received,'sequence':sequence,'peer':peer}
+        if studio and not placed_studio:
+            # Place the disposable demonstration asset in front of the absolute
+            # tracked camera. No tracker-origin subtraction or hidden pose offset.
+            from mathutils import Vector
+            cube.location = scene.camera.matrix_world @ Vector((0,0,-3))
+            cube.scale = (.5,.5,.5)
+            scene.camera.data.clip_end = 5000
+            placed_studio = True
+    status_name = 'blender-studio-status.json' if studio else ('blender-validation-status.json' if validation else 'blender-sender-status.json')
+    (root / "output" / status_name).write_text(json.dumps(data, indent=2))
     if validation:
         elapsed = time.monotonic()-started
         if phase == 0 and elapsed >= 15 and active:
@@ -61,6 +84,7 @@ def report():
         elif phase == 1 and active is None:
             scene.realtime_spout.width = 1280
             scene.realtime_spout.height = 720
+            realtime_spout._validation_phase = 2
             start()
             phase = 2
         elif phase == 2 and elapsed >= 30 and active:
@@ -69,6 +93,7 @@ def report():
         elif phase == 3 and active is None:
             scene.realtime_spout.width = 1920
             scene.realtime_spout.height = 1080
+            realtime_spout._validation_phase = 3
             start()
             phase = 4
         elif phase == 4 and elapsed >= 45 and active:

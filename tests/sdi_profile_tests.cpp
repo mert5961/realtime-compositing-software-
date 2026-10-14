@@ -11,6 +11,11 @@ int main() {
         reset();
         int frame = 0;
         registerFrame(&frame);
+        require(!isValid(&frame),"Uncaptured frame was valid");
+        setValid(&frame,true);
+        require(isValid(&frame),"Successful capture not valid");
+        setValid(&frame,false);
+        require(!isValid(&frame),"Failed transfer retained valid image");
         auto pointer = acquire(Kind::CaptureHostWait,1,[&] { return &frame; });
         require(pointer == &frame && host().capture == 1,"Capture ownership or pointer changed");
         stage(&frame,2);

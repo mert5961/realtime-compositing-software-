@@ -1,5 +1,10 @@
 # Blender camera texture prototype
 
+The integrated green-screen SDI runtime is now described in
+[STUDIO_RUNTIME.md](STUDIO_RUNTIME.md). This document describes the standalone
+texture receiver and its original baseline. Current lifecycle, tracking,
+frame-paired metadata, and validation improvements are covered in the studio guide.
+
 The Windows branch receives a live Blender camera texture on the GPU and
 previews it in a native Direct3D 11 window. It is a separate test from the AJA
 capture/playout tool. Blender-to-SDI output and camera compositing are not wired

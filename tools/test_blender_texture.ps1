@@ -14,7 +14,9 @@ try {
     # Retain a handle before Blender exits so Windows PowerShell can read its
     # exit code even though the receiver is waited on first.
     $demoHandle = $demo.Handle
-    $receiver = Start-Process -FilePath './build/blender/Release/blender_texture_test.exe' -ArgumentList @('--seconds', '50', '--log', $csvPath, '--snapshot', $snapshot) -WorkingDirectory $PWD -WindowStyle Normal -PassThru
+    $receiverExe = './build/studio/Release/blender_texture_test.exe'
+    if (-not (Test-Path $receiverExe)) { $receiverExe = './build/blender/Release/blender_texture_test.exe' }
+    $receiver = Start-Process -FilePath $receiverExe -ArgumentList @('--sender', 'RealtimeValidation', '--seconds', '50', '--log', $csvPath, '--snapshot', $snapshot) -WorkingDirectory $PWD -WindowStyle Normal -PassThru
     $receiverHandle = $receiver.Handle
     if (-not $receiver.WaitForExit(60000)) { throw 'Receiver did not finish within 60 seconds' }
     if ($receiver.ExitCode -ne 0) { throw "Receiver failed: $($receiver.ExitCode)" }
@@ -26,6 +28,8 @@ try {
     if ([int]$rows[-1].generation -lt 3 -or [int]$rows[-1].new_frames -lt 100) { throw 'Sender reconnection failed' }
     if ($rows[-1].connected -ne '0') { throw 'Sender shutdown not detected' }
     if (-not (Test-Path $snapshot)) { throw 'No diagnostic image received' }
+    python tools/validate_blender_run.py $csvPath $snapshot
+    if ($LASTEXITCODE -ne 0) { throw 'Per-generation image validation failed' }
     Write-Host "PASS: camera texture, resize, reconnect, shutdown. $csvPath"
     Write-Host "Observed frames: $($rows[-1].new_frames); skipped sender frames: $($rows[-1].skipped_sender_frames)"
 } finally {
