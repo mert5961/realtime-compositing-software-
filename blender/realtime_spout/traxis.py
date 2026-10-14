@@ -7,6 +7,7 @@ import json
 import math
 import socket
 import threading
+from collections import deque
 
 FIELDS = ('x','y','z','pan','tilt','roll','effectiveFov','sensorSizeX','sensorSizeY')
 
@@ -23,10 +24,19 @@ def parse(data):
     return value
 
 
-def camera_matrix(packet, scale=0.01):
+def camera_matrix(packet, scale=0.01, rotation_mapping='UNREAL'):
     # Unreal FRotator basis, converted from left-handed world to Blender's
     # right-handed world. Blender camera looks along local -Z with local +Y up.
-    yaw,pitch,roll = (math.radians(packet[k]) for k in ('pan','tilt','roll'))
+    # This installation's pan-only capture changed JSON roll by 53 degrees,
+    # but pan by <1 degree. Keep the observed export separate from a conventional
+    # named pan/tilt/roll export; the field names alone do not establish axes.
+    if rotation_mapping == 'Z_YAW':
+        keys = ('roll','tilt','pan')
+    elif rotation_mapping == 'UNREAL':
+        keys = ('pan','tilt','roll')
+    else:
+        raise ValueError('Unknown tracking rotation mapping')
+    yaw,pitch,roll = (math.radians(packet[k]) for k in keys)
     cy,sy,cp,sp,cr,sr = math.cos(yaw),math.sin(yaw),math.cos(pitch),math.sin(pitch),math.cos(roll),math.sin(roll)
     forward=(cp*cy,cp*sy,sp)
     right=(sr*sp*cy-cr*sy,sr*sp*sy+cr*cy,-sr*cp)
@@ -49,6 +59,7 @@ class Receiver:
         self.clock=clock
         self.lock=threading.Lock()
         self.latest=None
+        self.history=deque(maxlen=16)
         self.accepted=self.rejected=0
         self.stop=threading.Event()
         self.thread=threading.Thread(target=self.run,name='TraxisHubTrack',daemon=True)
@@ -63,6 +74,7 @@ class Receiver:
                 with self.lock:
                     self.accepted+=1
                     self.latest=(packet,received,self.accepted,peer)
+                    self.history.append(self.latest)
             except socket.timeout:
                 pass
             except (ValueError,UnicodeDecodeError):
@@ -75,6 +87,28 @@ class Receiver:
     def sample(self):
         with self.lock:
             return self.latest
+
+    def sample_at(self, target_ns):
+        """Resample bounded receive-time history; never extrapolate motion."""
+        with self.lock:
+            samples=list(self.history)
+        if not samples or target_ns < samples[0][1]:
+            return None
+        if target_ns >= samples[-1][1]:
+            return samples[-1], samples[-1][1]
+        for a,b in zip(samples,samples[1:]):
+            if a[1] <= target_ns <= b[1]:
+                fraction=(target_ns-a[1])/(b[1]-a[1]) if b[1]>a[1] else 1
+                packet=dict(b[0])
+                for key,av in a[0].items():
+                    bv=b[0].get(key)
+                    if isinstance(av,(int,float)) and isinstance(bv,(int,float)) and not isinstance(av,bool) and not isinstance(bv,bool):
+                        delta=bv-av
+                        if key in ('pan','tilt','roll'):
+                            delta=(delta+180)%360-180
+                        packet[key]=av+fraction*delta
+                return (packet,b[1],b[2],b[3]),target_ns
+        return None
 
     def close(self):
         self.stop.set()

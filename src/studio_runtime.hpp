@@ -19,6 +19,8 @@ struct RuntimeStats {
     double cameraReadyAgeMs=-1,blenderReceiveAgeMs=-1,processingMs=0;
     double blenderRenderAgeMs=-1,trackingReceiveAgeMs=-1;
     uint64_t blenderSession=0;
+    uint64_t blenderRepeats=0,blenderSkipped=0;
+    double poseTargetAgeMs=-1;
     unsigned inputDrops=0,outputDrops=0,inputLevel=0,outputLevel=0;
     std::string sourceStatus="Starting",fault;
 };

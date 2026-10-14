@@ -19,6 +19,10 @@ int main() {
         auto held=pool.latest();
         auto second=pool.tryWrite(); second->get().sequence=2; second->get().pixels.fill(2); second->publish();
         auto heldSecond=pool.latest();
+        auto due=pool.newestMatching([](const Frame& f){return f.sequence<=1;});
+        require(due && due->sequence==1,"Future frame displaced a due frame");
+        require(!pool.newestMatching([](const Frame& f){return f.sequence<1;}),"Frame published before its deadline");
+        due.reset();
         require(!pool.tryWrite(),"Busy consumer surface could be overwritten");
         pool.invalidate(); require(!pool.latest(),"Old generation remained selectable");
         require(held->pixels[0]==1 && heldSecond->pixels[0]==2,"Generation invalidation destroyed held pixels");

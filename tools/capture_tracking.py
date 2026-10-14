@@ -19,7 +19,9 @@ with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
     while time.monotonic() < end and len(packets) < 2000:
         try:
             data, peer = receiver.recvfrom(65535)
-            packets.append({'peer': peer, 'received_ns': time.monotonic_ns(), 'size': len(data), 'hex': data.hex()})
+            # Python 3.11 monotonic() uses 15.625 ms GetTickCount64 on Windows.
+            # Use QPC for inter-packet timing, as the native video path does.
+            packets.append({'peer': peer, 'received_ns': time.perf_counter_ns(), 'size': len(data), 'hex': data.hex()})
         except socket.timeout:
             pass
 args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -44,6 +44,7 @@ struct GpuFrame {
     DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
     uint64_t sequence=0,generation=0,resource=0,receivedNs=0;
     uint64_t renderBeginNs=0,trackingReceivedNs=0,session=0;
+    uint64_t scheduledNs=0,poseTargetNs=0;
 };
 class StampReader {
     HANDLE mapping=nullptr;
@@ -136,13 +137,14 @@ class Source {
                 frame.sequence=sequence; frame.generation=generation; frame.receivedNs=received; frame.slot=unsigned(reservation->index());
                 frame.renderBeginNs=after ? after->renderBeginNs : 0; frame.trackingReceivedNs=after ? after->trackingReceivedNs : 0;
                 frame.session=after ? after->session : 0;
+                frame.scheduledNs=after ? after->scheduledNs : 0; frame.poseTargetNs=after ? after->poseTargetNs : 0;
                 reservation->publish(); setStatus("Blender GPU frames ready");
             }
             receiver.ReleaseReceiver(); receiver.CloseDirectX11();
         } catch(const std::exception& error) { pool.invalidate(); setStatus(std::string("Blender transport fault: ")+error.what()); }
     }
 public:
-    compositor::LivePool<GpuFrame> pool{3};
+    compositor::LivePool<GpuFrame> pool{4};
     explicit Source(std::string sender):name(std::move(sender)) { thread=std::thread([this]{run();}); }
     ~Source() { stopping=true; if(thread.joinable()) thread.join(); }
     std::string getStatus() const { std::lock_guard lock(statusMutex); return status; }
@@ -159,7 +161,7 @@ struct GpuCompositor::Impl {
     ComPtr<ID3D11Buffer> constants;
     ComPtr<ID3D11SamplerState> sampler;
     struct Cache { uint64_t resource=0; ComPtr<ID3D11Texture2D> texture; ComPtr<ID3D11ShaderResourceView> view; };
-    std::array<Cache,3> cache;
+    std::array<Cache,4> cache;
     Impl(unsigned w,unsigned h,std::string sender,float t,float s):source(std::move(sender)),width(w),height(h),threshold(t),softness(s) {
         if(!w || !h || w%2) throw std::runtime_error("Even image width required");
         auto makeTexture=[&](unsigned tw,unsigned th,unsigned flags,ComPtr<ID3D11Texture2D>& texture) {
@@ -215,11 +217,17 @@ struct GpuCompositor::Impl {
     }
     CompositeInfo render(const void* input,unsigned pitch,void* output) {
         const auto begin=nowNs();
-        auto background=source.pool.latest();
+        // One frame of bounded presentation delay absorbs the measured 60 Hz
+        // viewport jitter of a nominal 50 Hz sender. Future frames stay owned
+        // in the pool; capture never waits for Blender to catch up.
+        auto background=source.pool.newestMatching([&](const GpuFrame& f) {
+            return !f.scheduledNs || f.scheduledNs+20000000<=begin;
+        });
         CompositeInfo info;
         if(background) {
             info.blenderReceivedNs=background->receivedNs; info.blenderSequence=background->sequence; info.blenderGeneration=background->generation;
             info.blenderRenderBeginNs=background->renderBeginNs; info.trackingReceivedNs=background->trackingReceivedNs; info.blenderSession=background->session;
+            info.blenderScheduledNs=background->scheduledNs; info.poseTargetNs=background->poseTargetNs;
         }
         ComPtr<ID3D11ShaderResourceView> backgroundView;
         info.usedBlender=background && begin-background->receivedNs<=500000000;

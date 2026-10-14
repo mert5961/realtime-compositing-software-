@@ -45,7 +45,7 @@ int run(const Options& options) {
         std::filesystem::create_directories("output");
         auto prefix="output/studio-"+std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
         std::ofstream csv(prefix+".csv"); if(!csv) throw std::runtime_error("Cannot open studio CSV");
-        csv << "seconds,captured,capture_failures,injected_failures,submitted,output_failures,repeats,camera_fallbacks,pool_full,input_drops,output_drops,input_level,output_level,camera_sequence,blender_generation,blender_sequence,camera_ready_age_ms,blender_receive_age_ms,composite_api_ms,blender_render_age_ms,tracking_receive_age_ms,blender_session\n";
+        csv << "seconds,captured,capture_failures,injected_failures,submitted,output_failures,repeats,camera_fallbacks,pool_full,input_drops,output_drops,input_level,output_level,camera_sequence,blender_generation,blender_sequence,camera_ready_age_ms,blender_receive_age_ms,composite_api_ms,blender_render_age_ms,tracking_receive_age_ms,blender_session,blender_repeats,blender_skipped,pose_target_age_ms\n";
         const auto start=std::chrono::steady_clock::now(); bool complete=false,error=false;
         studio::RuntimeStats stats;
         while(!stop) {
@@ -54,11 +54,13 @@ int run(const Options& options) {
             csv << std::fixed << std::setprecision(3) << elapsed << ',' << stats.captured << ',' << stats.captureFailures << ',' << stats.injectedFailures << ',' << stats.submitted << ',' << stats.outputFailures
                 << ',' << stats.repeats << ',' << stats.fallbacks << ',' << stats.poolFull << ',' << stats.inputDrops << ',' << stats.outputDrops << ',' << stats.inputLevel << ',' << stats.outputLevel
                 << ',' << stats.cameraSequence << ',' << stats.blenderGeneration << ',' << stats.blenderSequence << ',' << stats.cameraReadyAgeMs << ',' << stats.blenderReceiveAgeMs << ',' << stats.processingMs
-                << ',' << stats.blenderRenderAgeMs << ',' << stats.trackingReceiveAgeMs << ',' << stats.blenderSession << '\n';
+                << ',' << stats.blenderRenderAgeMs << ',' << stats.trackingReceiveAgeMs << ',' << stats.blenderSession
+                << ',' << stats.blenderRepeats << ',' << stats.blenderSkipped << ',' << stats.poseTargetAgeMs << '\n';
             csv.flush();
             std::ostringstream text;
             text << "Camera + Blender studio composite | " << std::fixed << std::setprecision(1) << elapsed << " s\r\n"
                  << "Capture " << stats.captured << " | SDI submitted " << stats.submitted << " | repeated outputs " << stats.repeats << "\r\n"
+                 << "Blender repeated/skipped ticks " << stats.blenderRepeats << " / " << stats.blenderSkipped << " | pose target age " << stats.poseTargetAgeMs << " ms\r\n"
                  << "AJA input/output drops " << stats.inputDrops << " / " << stats.outputDrops << " | failed capture/output DMA " << stats.captureFailures << " / " << stats.outputFailures << "\r\n"
                  << "Camera fallback outputs " << stats.fallbacks << " | completed host pool: 3 | pool full " << stats.poolFull << "\r\n\r\n"
                  << "Camera ready age " << stats.cameraReadyAgeMs << " ms | Blender receive age " << stats.blenderReceiveAgeMs << " ms\r\n"

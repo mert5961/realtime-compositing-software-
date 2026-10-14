@@ -4,7 +4,7 @@
 |---|---|---|
 | Night of the Living Dead | Failed transfers never produce valid frames | Capture errors are rejected before processing/publication. The inherited SDI test marks failed ring slots invalid and releases them without playout. |
 | No Country for Old Men | Output keeps running when Blender stalls | Spout waits run on a separate worker. SDI output follows AJA vertical opportunities and consumes completed host frames. It repeats valid output when necessary; a missing or >500 ms stale Blender/pose source selects live camera passthrough. |
-| Fight Club | Object lifetime does not preserve pixels | Three owned GPU surfaces publish only after completed copy queries. Reader leases prevent reuse through compositing readback. Three completed host surfaces remain leased through output DMA. |
+| Fight Club | Object lifetime does not preserve pixels | Four owned GPU surfaces publish only after completed copy queries. Reader leases prevent reuse through compositing readback. Three completed host surfaces remain leased through output DMA. |
 | Perfect Blonde | A pass proves image delivery | Every reconnect phase must deliver progress, exact dimensions, and distinct asymmetric color patterns. Negative fixtures reject false progress, wrong geometry, stale colors, and truncated images. |
 
 ## Run
@@ -31,7 +31,7 @@ lens distortion correction are outside this first integrated milestone.
 
 ```text
 THT JSON -> bounded latest tracking sample -> Blender camera pose/FOV
-Blender offscreen -> Spout worker -> 3 owned, completed GPU surfaces
+Blender offscreen -> Spout worker -> 4 owned, completed GPU surfaces
                                           |
 Camera -> AJA input ring (4) -> DMA -> RAM -> GPU key/composite
                                           |
@@ -81,6 +81,7 @@ rather than changing tracking origin. Use your real studio scene for alignment.
 
 Native metadata contains session identity, exact Spout publication count,
 dimensions, render-start time, and associated tracking-packet receive time.
+Version 2 also pairs scheduled-frame time and resampled-pose time with pixels.
 An odd/even guard spans image publication. Reception requires identical even
 guards before/after the copy and an exact image-count/dimension match. Failed
 or busy sends never relabel old pixels with new timestamps. Session/resource
@@ -89,6 +90,19 @@ transitions invalidate pending selections.
 Clocks use this host's QPC-derived steady timeline. CSV/UI separately report
 camera capture-completion age, Blender receive age, render-start age, and
 tracking-receive age at **output DMA submission**. `-1` means unavailable.
+Timed tracking also reports pose-target age and Blender repeated/skipped timeline
+steps. The studio demo uses a stationary cube, fixed 20 ms QPC timeline steps,
+16 bounded tracking samples, and receive-time interpolation with a 20 ms
+lookback. Angles take the shortest wrapped path. No motion is extrapolated.
+The compositor selects the newest due GPU frame with at least 20 ms presentation
+delay. Four owned surfaces retain future/due frames without blocking SDI output.
+This mode currently requires 50 FPS. It is nominal-clock resampling, not hardware
+genlock, exposure synchronization, or a complete camera/CG latency calibration.
+
+Live validation on 2026-10-14: the user confirmed smooth background motion on
+SDI. In a 20-second interval, AJA drops and camera output repeats were zero;
+Blender recorded one repeated and one skipped scheduled step. Pose-target age
+at output DMA was approximately 79–81 ms. Television latency is additional.
 Metadata-free legacy senders have no render/pose age. Tracking-required sources
 without a sample select camera fallback.
 

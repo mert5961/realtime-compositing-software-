@@ -15,6 +15,7 @@ if not addon_dir.exists():
 sys.path.insert(0, str(addon_dir))
 import realtime_spout
 realtime_spout.register()
+realtime_spout.error_log_path = root / 'output/blender-spout-errors.log'
 scene = bpy.context.scene
 scene.render.fps = 50
 scene.frame_end = 250
@@ -32,8 +33,11 @@ validation = '--validate' in sys.argv
 studio = '--studio' in sys.argv
 placed_studio = False
 if studio:
+    cube.animation_data_clear()
     scene.realtime_spout.sender = 'RealtimeStudio'
     scene.realtime_spout.tracking = True
+    scene.realtime_spout.tracking_rotation = 'Z_YAW'
+    scene.realtime_spout.timed_tracking = True
 if validation:
     scene.realtime_spout.sender = "RealtimeValidation"
     realtime_spout._validation_phase = 1
@@ -50,14 +54,16 @@ def start():
                 region = next(r for r in area.regions if r.type == 'WINDOW')
                 with bpy.context.temp_override(window=window, area=area, region=region):
                     bpy.ops.realtime_spout.start()
-                    if not bpy.context.screen.is_animation_playing:
+                    if not studio and not bpy.context.screen.is_animation_playing:
                         bpy.ops.screen.animation_play()
                 return None
     return 1.0
 
 
 def report():
-    global phase, placed_studio
+    global phase, placed_studio, scene, cube
+    scene = bpy.context.scene
+    cube = bpy.data.objects.get('Cube')
     active = realtime_spout._active
     data = {"blender": bpy.app.version_string, "status": scene.realtime_spout.status,
             "elapsed_s": time.monotonic()-started, "frames": active.frames if active else 0,
@@ -66,7 +72,12 @@ def report():
     if active and active.tracking_sample:
         packet, received, sequence, peer = active.tracking_sample
         data['tracking'] = {'packet':packet,'received_ns':received,'sequence':sequence,'peer':peer}
-        if studio and not placed_studio:
+        camera = scene.camera
+        data['camera'] = {'rotation_mapping': scene.realtime_spout.tracking_rotation,
+                          'scheduled_ns': active.scheduled_ns, 'pose_target_ns': active.pose_target_ns,
+                          'matrix_world': [list(row) for row in camera.matrix_world],
+                          'evaluated_matrix_world': [list(row) for row in camera.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world]}
+        if studio and not placed_studio and cube:
             # Place the disposable demonstration asset in front of the absolute
             # tracked camera. No tracker-origin subtraction or hidden pose offset.
             from mathutils import Vector

@@ -89,6 +89,7 @@ void Runtime::output() {
         sdi_profile::lane=1;
         std::shared_ptr<const OutputFrame> selected=black;
         uint64_t previous=0;
+        uint64_t previousBlenderSession=0,previousBlenderTick=0;
         while(!stopping) {
             const bool opportunity=sdi_profile::timed(sdi_profile::Kind::OutputDeviceWait,[&]{return mDevice.WaitForOutputVerticalInterrupt(mConfig.fOutputChannel);});
             if(!opportunity) { fault("Output clock interrupt failed"); stopping=true; break; }
@@ -114,6 +115,16 @@ void Runtime::output() {
             stats.blenderRenderAgeMs=selected->composite.blenderRenderBeginNs ? double(submitted-selected->composite.blenderRenderBeginNs)/1e6 : -1;
             stats.trackingReceiveAgeMs=selected->composite.trackingReceivedNs>1 ? double(submitted-selected->composite.trackingReceivedNs)/1e6 : -1;
             stats.blenderSession=selected->composite.blenderSession;
+            const auto& bg=selected->composite;
+            if(bg.usedBlender && bg.blenderScheduledNs) {
+                if(previousBlenderSession==bg.blenderSession && previousBlenderTick) {
+                    if(bg.blenderScheduledNs==previousBlenderTick) ++stats.blenderRepeats;
+                    else if(bg.blenderScheduledNs>previousBlenderTick+20000000)
+                        stats.blenderSkipped+=(bg.blenderScheduledNs-previousBlenderTick)/20000000-1;
+                }
+                previousBlenderSession=bg.blenderSession; previousBlenderTick=bg.blenderScheduledNs;
+            } else previousBlenderSession=previousBlenderTick=0;
+            stats.poseTargetAgeMs=bg.poseTargetNs ? double(submitted-bg.poseTargetNs)/1e6 : -1;
         }
     } catch(const std::exception& error) { fault(std::string("Output fault: ")+error.what()); stopping=true; }
 }

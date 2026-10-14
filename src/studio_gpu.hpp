@@ -8,6 +8,7 @@ uint64_t nowNs();
 struct CompositeInfo {
     uint64_t blenderSequence=0, blenderGeneration=0, blenderReceivedNs=0;
     uint64_t blenderRenderBeginNs=0,trackingReceivedNs=0,blenderSession=0;
+    uint64_t blenderScheduledNs=0,poseTargetNs=0;
     bool usedBlender=false;
     double processingMs=0;
 };

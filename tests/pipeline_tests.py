@@ -9,6 +9,8 @@ import sys
 import tempfile
 import types
 import unittest
+import threading
+from collections import deque
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tools'))
@@ -21,9 +23,9 @@ class PipelineTests(unittest.TestCase):
     def setUpClass(cls):
         fake=types.ModuleType('bpy'); fake.types=types.SimpleNamespace(Operator=object,Panel=object,PropertyGroup=object,Scene=type('Scene',(),{}))
         fake.props=types.ModuleType('bpy.props')
-        for name in ('BoolProperty','FloatProperty','IntProperty','StringProperty','PointerProperty'):
+        for name in ('BoolProperty','EnumProperty','FloatProperty','IntProperty','StringProperty','PointerProperty'):
             setattr(fake.props,name,lambda **kwargs:None)
-        fake.app=types.SimpleNamespace(handlers=types.SimpleNamespace(persistent=lambda function:function,load_pre=[]))
+        fake.app=types.SimpleNamespace(handlers=types.SimpleNamespace(persistent=lambda function:function,load_pre=[],undo_pre=[],redo_pre=[],undo_post=[],redo_post=[]))
         fake.utils=types.SimpleNamespace(register_class=lambda cls:None,unregister_class=lambda cls:None)
         cls.removed=[]
         fake.types.SpaceView3D=types.SimpleNamespace(draw_handler_remove=lambda *args:cls.removed.append('draw'))
@@ -57,6 +59,35 @@ class PipelineTests(unittest.TestCase):
         operator=self.operator(True); operator.cancel(None)
         self.assertIsNone(self.addon._active)
 
+    def test_invalidated_scene_error_still_cleans_up_and_logs(self):
+        operator=self.operator(True)
+        class InvalidScene:
+            def __getattr__(self,name):
+                raise ReferenceError('StructRNA of type Scene has been removed')
+        operator._scene=InvalidScene()
+        operator._drawing=False; operator._next=0; operator._fps=50; operator.stop_requested=False
+        operator._area=object()
+        self.addon.bpy.context=types.SimpleNamespace(area=operator._area)
+        with tempfile.TemporaryDirectory() as directory:
+            self.addon.error_log_path=Path(directory)/'errors.log'
+            with contextlib.redirect_stdout(io.StringIO()):
+                operator.draw_frame()
+            self.assertIn('StructRNA',self.addon.error_log_path.read_text())
+        self.assertIsNone(self.addon._active)
+        self.assertTrue(operator._done)
+        self.assertEqual(self.removed,['draw','timer'])
+
+    def test_undo_and_redo_handlers_stop_before_rna_changes(self):
+        self.addon.register()
+        try:
+            for name in ('undo_pre','redo_pre'):
+                operator=self.operator(True)
+                for callback in getattr(self.addon.bpy.app.handlers,name): callback(None)
+                self.assertIsNone(self.addon._active)
+                self.assertTrue(operator._done)
+        finally:
+            self.addon.unregister()
+
     def test_traxis_packet_and_unreal_camera_basis(self):
         traxis=self.addon.traxis
         packet=dict(x=100,y=200,z=300,pan=0,tilt=0,roll=0,effectiveFov=90,sensorSizeX=9.6,sensorSizeY=5.4)
@@ -73,12 +104,45 @@ class PipelineTests(unittest.TestCase):
             with self.assertRaises(ValueError): traxis.parse(json.dumps(dict(packet,**{key:bad})))
         with self.assertRaises(ValueError): traxis.parse('{}')
 
+    def test_observed_export_pan_changes_optical_direction(self):
+        packet=dict(x=0,y=0,z=0,pan=0,tilt=0,roll=90)
+        matrix=self.addon.traxis.camera_matrix(packet, rotation_mapping='Z_YAW')
+        forward=tuple(-row[2] for row in matrix[:3])
+        for actual,expected in zip(forward,(0,-1,0)):
+            self.assertAlmostEqual(actual,expected)
+        # Camera roll must change image orientation without changing sightline.
+        matrix=self.addon.traxis.camera_matrix(dict(packet,pan=45,roll=0), rotation_mapping='Z_YAW')
+        for actual,expected in zip(tuple(-row[2] for row in matrix[:3]),(1,0,0)):
+            self.assertAlmostEqual(actual,expected)
+        with self.assertRaises(ValueError):
+            self.addon.traxis.camera_matrix(packet, rotation_mapping='INVALID')
+
     def test_header_only_analyzer_preserves_trace(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'run-trace.csv'
             path.write_text('end_seconds,shutdown,event,duration_ms,success,host_capture,host_ready,host_output,host_occupied\n')
             path.with_name('run.csv').write_text('seconds,captured\n')
             self.assertIn('No samples collected',analyze(path,1))
+
+    def test_tracking_history_resamples_fixed_time_without_extrapolation(self):
+        receiver=self.addon.traxis.Receiver.__new__(self.addon.traxis.Receiver)
+        receiver.lock=threading.Lock()
+        receiver.history=deque([
+            ({'x':0.,'roll':179.},100000000,1,('peer',1)),
+            ({'x':22.,'roll':-179.},122000000,2,('peer',1)),
+            ({'x':41.,'roll':-177.},141000000,3,('peer',1)),
+        ])
+        self.assertIsNone(receiver.sample_at(99000000))
+        (packet,received,sequence,peer),target=receiver.sample_at(110000000)
+        self.assertAlmostEqual(packet['x'],10.)
+        self.assertAlmostEqual(packet['roll'],179+20/22)
+        self.assertEqual((received,sequence,target),(122000000,2,110000000))
+        for target in (105000000,125000000):
+            sample,actual=receiver.sample_at(target)
+            self.assertAlmostEqual(sample[0]['x'],(target-100000000)/1e6)
+        sample,target=receiver.sample_at(160000000)
+        self.assertEqual((sample[0]['x'],target),(41.,141000000))
+        self.assertEqual(receiver.history[0][0]['x'],0.)
 
     def test_validator_rejects_false_resize_and_stale_pixels(self):
         with tempfile.TemporaryDirectory() as directory:

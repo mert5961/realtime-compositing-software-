@@ -6,7 +6,7 @@
 #include <cstdint>
 
 namespace compositor {
-// Bounded latest-frame mailbox. A read lease preserves pixels, not just the
+// Bounded frame storage with latest or scheduled selection. A read lease preserves pixels, not just the
 // resource object: a writer cannot reserve any slot with outstanding readers.
 // GPU callers must establish producer completion before publish, and retain
 // their lease until downstream GPU/DMA completion, not merely CPU submission.
@@ -49,9 +49,12 @@ public:
         return Write(state_,selected);
     }
     std::shared_ptr<const T> latest() const {
+        return newestMatching([](const T&){ return true; });
+    }
+    template<class Predicate> std::shared_ptr<const T> newestMatching(Predicate predicate) const {
         std::lock_guard lock(state_->mutex);
         const Slot* selected=nullptr;
-        for(const auto& slot:state_->slots) if(slot.valid && !slot.writing && (!selected || slot.order>selected->order)) selected=&slot;
+        for(const auto& slot:state_->slots) if(slot.valid && !slot.writing && predicate(*slot.value) && (!selected || slot.order>selected->order)) selected=&slot;
         return selected ? selected->value : nullptr;
     }
     void invalidate() { std::lock_guard lock(state_->mutex); for(auto& slot:state_->slots) slot.valid=false; }

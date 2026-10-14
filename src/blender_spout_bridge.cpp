@@ -99,6 +99,7 @@ BRIDGE int blender_spout_start(const char* name) {
         InterlockedExchange(&stamp->guard,1);
         stamp->magic=studio::stampMagic; stamp->session=blender_spout_clock(); stamp->sequence=0;
         stamp->renderBeginNs=0; stamp->trackingReceivedNs=0; stamp->width=stamp->height=0;
+        stamp->scheduledNs=stamp->poseTargetNs=0;
         InterlockedExchange(&stamp->guard,2);
         sender = std::move(candidate);
         error.clear();
@@ -136,7 +137,7 @@ BRIDGE int blender_spout_stop() {
     return 1;
 }
 
-BRIDGE int blender_spout_send_tagged(unsigned width,unsigned height,uint64_t renderBeginNs,uint64_t trackingReceivedNs) {
+BRIDGE int blender_spout_send_tagged(unsigned width,unsigned height,uint64_t renderBeginNs,uint64_t trackingReceivedNs,uint64_t scheduledNs,uint64_t poseTargetNs) {
     if(!stamp || !sender || !ownsContext()) { error="Tagged sender context unavailable"; return 0; }
     // Odd generation covers the entire image publication. Readers validate
     // unchanged even guards BEFORE and AFTER reception and require the exact
@@ -146,6 +147,7 @@ BRIDGE int blender_spout_send_tagged(unsigned width,unsigned height,uint64_t ren
     if(result==1) {
         stamp->sequence=sender->GetFrame(); stamp->renderBeginNs=renderBeginNs;
         stamp->trackingReceivedNs=trackingReceivedNs; stamp->width=width; stamp->height=height;
+        stamp->scheduledNs=scheduledNs; stamp->poseTargetNs=poseTargetNs;
     }
     InterlockedIncrement(&stamp->guard);
     return result;
