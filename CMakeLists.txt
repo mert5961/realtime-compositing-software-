@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.22)
 project(RealtimeCompositor VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -75,12 +75,43 @@ if(COMPOSITOR_BUILD_SPOUT AND WIN32)
 endif()
 
 include(CTest)
+# Portable synthetic engine (studio::Control) for UI work and tests without hardware.
+add_library(studio_fake STATIC src/studio_fake.cpp)
+target_include_directories(studio_fake PUBLIC src)
+target_link_libraries(studio_fake PUBLIC Threads::Threads)
+set(COMPOSITOR_HAS_STUDIO_ENGINE OFF)
 if(COMPOSITOR_BUILD_AJA AND COMPOSITOR_BUILD_SPOUT AND WIN32)
-    add_executable(studio_test src/studio_test_win.cpp src/studio_runtime.cpp src/studio_gpu.cpp
+    set(COMPOSITOR_HAS_STUDIO_ENGINE ON)
+    # Real engine shared by the CLI/Win32 test tool and the JUCE app. Its public
+    # headers (studio_engine.hpp, studio_control.hpp, studio_types.hpp) are AJA-free.
+    add_library(studio_engine STATIC src/studio_engine.cpp src/studio_runtime.cpp src/studio_gpu.cpp
         "${CMAKE_CURRENT_BINARY_DIR}/aja-burn.cpp" "${AJA_SDK_DIR}/demos/ntv2democommon.cpp")
-    target_include_directories(studio_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" src include "${AJA_SDK_DIR}" "${AJA_SDK_DIR}/demos" "${AJA_SDK_DIR}/demos/ntv2burn" "${AJA_SDK_DIR}/ajantv2/includes")
+    target_include_directories(studio_engine PUBLIC src PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" include "${AJA_SDK_DIR}" "${AJA_SDK_DIR}/demos" "${AJA_SDK_DIR}/demos/ntv2burn" "${AJA_SDK_DIR}/ajantv2/includes")
+    target_compile_definitions(studio_engine PRIVATE NOMINMAX)
+    target_link_libraries(studio_engine PRIVATE ajantv2 SpoutDX_static d3dcompiler)
+    add_executable(studio_test src/studio_test_win.cpp)
+    target_include_directories(studio_test PRIVATE "${AJA_SDK_DIR}" "${AJA_SDK_DIR}/ajantv2/includes")
     target_compile_definitions(studio_test PRIVATE NOMINMAX)
-    target_link_libraries(studio_test PRIVATE ajantv2 SpoutDX_static d3dcompiler user32)
+    target_link_libraries(studio_test PRIVATE studio_engine ajantv2 user32)
+endif()
+
+option(COMPOSITOR_BUILD_JUCE_UI "Build the JUCE studio control app" OFF)
+set(JUCE_SDK_DIR "${CMAKE_SOURCE_DIR}/build/deps/JUCE" CACHE PATH "JUCE source directory")
+if(COMPOSITOR_BUILD_JUCE_UI)
+    add_subdirectory("${JUCE_SDK_DIR}" "juce" EXCLUDE_FROM_ALL)
+    juce_add_gui_app(studio_control PRODUCT_NAME "Realtime Studio Control" COMPANY_NAME "Realtime Studio" BUNDLE_ID com.realtimestudio.control VERSION ${PROJECT_VERSION})
+    target_sources(studio_control PRIVATE app/Main.cpp app/RustLookAndFeel.cpp app/StudioPanels.cpp)
+    target_compile_definitions(studio_control PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+        JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:studio_control,JUCE_PRODUCT_NAME>"
+        JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:studio_control,JUCE_VERSION>"
+        STUDIO_HAS_ENGINE=$<BOOL:${COMPOSITOR_HAS_STUDIO_ENGINE}>)
+    # GUI modules only; no audio. Without AJA/Spout the app runs the simulated engine.
+    target_link_libraries(studio_control PRIVATE studio_fake juce::juce_gui_basics
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+    if(COMPOSITOR_HAS_STUDIO_ENGINE)
+        target_link_libraries(studio_control PRIVATE studio_engine)
+    endif()
 endif()
 if(BUILD_TESTING)
     add_executable(live_pool_tests tests/live_pool_tests.cpp)
@@ -95,6 +126,12 @@ if(BUILD_TESTING)
     target_include_directories(sdi_profile_tests PRIVATE src)
     target_link_libraries(sdi_profile_tests PRIVATE Threads::Threads)
     add_test(NAME sdi_profile_metrics COMMAND sdi_profile_tests)
+    add_executable(studio_engine_tests tests/studio_engine_tests.cpp)
+    target_include_directories(studio_engine_tests PRIVATE src)
+    add_test(NAME studio_engine_logic COMMAND studio_engine_tests)
+    add_executable(studio_fake_tests tests/studio_fake_tests.cpp)
+    target_link_libraries(studio_fake_tests PRIVATE studio_fake)
+    add_test(NAME studio_fake_engine COMMAND studio_fake_tests)
     add_executable(compositor_tests tests/core_tests.cpp)
     target_link_libraries(compositor_tests PRIVATE compositor_core)
     add_test(NAME compositor_core_tests COMMAND compositor_tests)
