@@ -10,12 +10,17 @@
 ## Run
 
 Build: `powershell -NoProfile -ExecutionPolicy Bypass -File .\setup-studio.ps1`.
-Launch **Start Studio Blender.cmd**, then **Start Studio Composite.cmd** and
-click **Start studio**. Defaults: Corvid44 device 0, camera SDI 1, television
-SDI 4, sender `RealtimeStudio`. Threshold and softness are adjustable while stopped.
+Launch **Start Studio Blender.cmd**, then **Start Studio Control.cmd** (JUCE
+control app) and click **START**. The older **Start Studio Composite.cmd**
+test UI and the CLI remain as diagnostics; run only one of them at a time.
+`Start Studio Control.cmd --fake` opens the UI on a simulated engine that never
+touches the card. Defaults: Corvid44 device 0, camera SDI 1, television
+SDI 4, sender `RealtimeStudio`. Threshold and softness can be changed while
+running (**Apply key**); the next composited frame uses them, and every CSV
+sample records the key in its `threshold`/`softness` columns.
 For a normally opened Blender scene, install `build/studio/realtime_spout.zip`
 through Preferences > Add-ons > Install from Disk; use the **Realtime** sidebar.
-Stop Blender before rebuilding/replacing a loaded native DLL.
+Stop Blender before rebuilding/repla cing a loaded native DLL.
 
 Stop any other session owning this AJA card. The ownership check releases only
 owners confirmed to have exited. Only one application can receive UDP 8873;
@@ -136,7 +141,7 @@ deleted in an arbitrary context. Duplicate sender names are explicitly rejected.
   stale-source camera fallback increased and Blender recovered.
 
 Raw logs stay in ignored `output/studio-*.csv`, with trace/profile companions.
-CSV writes occur on the monitor thread, outside frame loops. Timing traces are
+CSV writes occur on the `studio::Engine` monitor thread, outside frame loops. Timing traces are
 bounded and report discarded events when full. Short tests establish a baseline,
 not a sustained workload guarantee; EEVEE load, device loss, exposure alignment,
 full lens warp, and long soak testing remain.

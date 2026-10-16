@@ -1,4 +1,5 @@
 #pragma once
+#include "studio_types.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -17,8 +18,9 @@ class GpuCompositor {
     struct Impl;
     std::unique_ptr<Impl> impl_;
 public:
-    GpuCompositor(unsigned width,unsigned height,std::string sender,float threshold=.12f,float softness=.10f);
+    GpuCompositor(unsigned width,unsigned height,std::string sender,KeyParams key={});
     ~GpuCompositor();
+    void setKey(KeyParams key); // any thread; the next render() uses it
     CompositeInfo render(const void* uyvy,unsigned pitch,void* output);
     std::string sourceStatus() const;
 };

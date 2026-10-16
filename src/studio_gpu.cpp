@@ -152,7 +152,7 @@ public:
 
 struct GpuCompositor::Impl {
     Device gpu; Source source;
-    unsigned width,height; float threshold,softness;
+    unsigned width,height; std::atomic<KeyParams> key;
     ComPtr<ID3D11Texture2D> camera,composite,packed,staging;
     ComPtr<ID3D11ShaderResourceView> cameraView,compositeView;
     ComPtr<ID3D11RenderTargetView> compositeTarget,packedTarget;
@@ -162,7 +162,7 @@ struct GpuCompositor::Impl {
     ComPtr<ID3D11SamplerState> sampler;
     struct Cache { uint64_t resource=0; ComPtr<ID3D11Texture2D> texture; ComPtr<ID3D11ShaderResourceView> view; };
     std::array<Cache,4> cache;
-    Impl(unsigned w,unsigned h,std::string sender,float t,float s):source(std::move(sender)),width(w),height(h),threshold(t),softness(s) {
+    Impl(unsigned w,unsigned h,std::string sender,KeyParams k):source(std::move(sender)),width(w),height(h),key(k) {
         if(!w || !h || w%2) throw std::runtime_error("Even image width required");
         auto makeTexture=[&](unsigned tw,unsigned th,unsigned flags,ComPtr<ID3D11Texture2D>& texture) {
             D3D11_TEXTURE2D_DESC desc{}; desc.Width=tw; desc.Height=th; desc.MipLevels=desc.ArraySize=1;
@@ -245,7 +245,8 @@ struct GpuCompositor::Impl {
         // Camera bytes are U Y0 V Y1. Upload and keying happen on this device;
         // Spout waits and resource copy completion remain on the source worker.
         gpu.context->UpdateSubresource(camera.Get(),0,nullptr,input,pitch,0);
-        struct Settings { float width,height,threshold,softness; unsigned enabled; float padding[3]; } settings{float(width),float(height),threshold,softness,unsigned(info.usedBlender),{}};
+        const auto k=key.load(std::memory_order_relaxed); // one consistent pair per frame
+        struct Settings { float width,height,threshold,softness; unsigned enabled; float padding[3]; } settings{float(width),float(height),k.threshold,k.softness,unsigned(info.usedBlender),{}};
         gpu.context->UpdateSubresource(constants.Get(),0,nullptr,&settings,0,0);
         gpu.context->PSSetConstantBuffers(0,1,constants.GetAddressOf()); gpu.context->PSSetSamplers(0,1,sampler.GetAddressOf());
         gpu.context->VSSetShader(vertex.Get(),nullptr,0); gpu.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -268,8 +269,9 @@ struct GpuCompositor::Impl {
         info.processingMs=double(nowNs()-begin)/1e6; return info;
     }
 };
-GpuCompositor::GpuCompositor(unsigned w,unsigned h,std::string name,float t,float s):impl_(std::make_unique<Impl>(w,h,std::move(name),t,s)) {}
+GpuCompositor::GpuCompositor(unsigned w,unsigned h,std::string name,KeyParams key):impl_(std::make_unique<Impl>(w,h,std::move(name),key)) {}
 GpuCompositor::~GpuCompositor()=default;
+void GpuCompositor::setKey(KeyParams key) { impl_->key.store(key,std::memory_order_relaxed); }
 CompositeInfo GpuCompositor::render(const void* input,unsigned pitch,void* output) { return impl_->render(input,pitch,output); }
 std::string GpuCompositor::sourceStatus() const { return impl_->source.getStatus(); }
 
@@ -290,6 +292,14 @@ int gpuSelfTest() {
     if(!info.usedBlender) throw std::runtime_error("GPU source never published a valid frame: "+engine.sourceStatus());
     const unsigned char expected[4]={240,32,118,32};
     for(size_t i=0;i<output.size();++i) if(std::abs(int(output[i])-int(expected[i%4]))>3) throw std::runtime_error("Green key / BT.709 pack numeric validation failed");
+    // Live key tuning: a threshold above this camera's green dominance (~0.996)
+    // keeps the spill-suppressed foreground; restoring the default keys it again.
+    engine.setKey({.999f,.0005f}); info=engine.render(camera.data(),width*2,output.data());
+    const unsigned char expectedForeground[4]={123,26,122,26};
+    if(!info.usedBlender) throw std::runtime_error("Blender source lost during live key test");
+    for(size_t i=0;i<output.size();++i) if(std::abs(int(output[i])-int(expectedForeground[i%4]))>3) throw std::runtime_error("Live key change was not delivered");
+    engine.setKey({}); info=engine.render(camera.data(),width*2,output.data());
+    for(size_t i=0;i<output.size();++i) if(std::abs(int(output[i])-int(expected[i%4]))>3) throw std::runtime_error("Restored key was not delivered");
     auto held=engine.impl_->source.pool.latest();
     if(!held) throw std::runtime_error("No immutable GPU lease");
     const float red[4]={1,0,0,1}; gpu.context->ClearRenderTargetView(target.Get(),red);

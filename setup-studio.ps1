@@ -4,7 +4,10 @@ if (-not (Test-Path build/deps/Spout2/CMakeLists.txt)) { git clone --depth 1 --b
 if (-not (Test-Path build/deps/libajantv2/CMakeLists.txt)) { git clone --depth 1 --branch ntv2_18_0_0 https://github.com/aja-video/libajantv2.git build/deps/libajantv2; if ($LASTEXITCODE) { throw 'AJA download failed' } }
 if ((git -C build/deps/Spout2 rev-parse HEAD) -ne '6b68a5b4fdeca6130b851e5f9366467a844860e5') { throw 'Spout revision mismatch' }
 if ((git -C build/deps/libajantv2 rev-parse HEAD) -ne '4add45239a03960aa36de6fef326ee1b753e8ec9') { throw 'AJA revision mismatch' }
-cmake -S . -B build/studio -DCOMPOSITOR_BUILD_AJA=ON -DCOMPOSITOR_BUILD_SPOUT=ON
+# JUCE is dual-licensed (AGPLv3 or the commercial JUCE 9 EULA); see build/deps/JUCE/LICENSE.md.
+if (-not (Test-Path build/deps/JUCE/CMakeLists.txt)) { git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git build/deps/JUCE; if ($LASTEXITCODE) { throw 'JUCE download failed' } }
+if ((git -C build/deps/JUCE rev-parse HEAD) -ne 'be29c81492b6151c8ea8d14c840e1311963b3a83') { throw 'JUCE revision mismatch' }
+cmake -S . -B build/studio -DCOMPOSITOR_BUILD_AJA=ON -DCOMPOSITOR_BUILD_SPOUT=ON -DCOMPOSITOR_BUILD_JUCE_UI=ON
 if ($LASTEXITCODE) { throw 'Configuration failed' }
 cmake --build build/studio --config Release -j 8
 if ($LASTEXITCODE) { throw 'Studio build failed' }
@@ -13,4 +16,4 @@ Copy-Item blender/realtime_spout/*.py build/studio-addon/realtime_spout/
 Copy-Item build/studio/Release/blender_spout_bridge.dll build/studio-addon/realtime_spout/
 Copy-Item build/studio/Release/Spout-LICENSE.txt build/studio-addon/realtime_spout/
 Compress-Archive -Path build/studio-addon/realtime_spout -DestinationPath build/studio/realtime_spout.zip -Force
-Write-Host 'Ready: Start Studio Composite.cmd'
+Write-Host 'Ready: Start Studio Control.cmd (JUCE UI) or Start Studio Composite.cmd (test UI)'

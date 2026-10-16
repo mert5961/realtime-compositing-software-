@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 namespace studio {
-Runtime::Runtime(const BurnConfig& config,std::string name,float t,float s,unsigned every):NTV2Burn(config),sender(std::move(name)),threshold(t),softness(s),faultEvery(every) {}
+Runtime::Runtime(const BurnConfig& config,std::string name,const std::atomic<KeyParams>& k,unsigned every):NTV2Burn(config),sender(std::move(name)),key(k),faultEvery(every) {}
 Runtime::~Runtime() { Quit(); }
 void Runtime::fault(std::string message) { std::lock_guard lock(statsMutex); if(stats.fault.empty()) stats.fault=std::move(message); }
 AJAStatus Runtime::Run() {
@@ -19,7 +19,7 @@ AJAStatus Runtime::Run() {
     completed=std::make_unique<compositor::LivePool<OutputFrame>>(3,[&](size_t){ OutputFrame frame; frame.bytes.resize(bytes); return frame; });
     black=std::make_shared<OutputFrame>(); black->bytes.resize(bytes);
     for(size_t i=0;i<bytes;i+=4) { black->bytes[i]=black->bytes[i+2]=128; black->bytes[i+1]=black->bytes[i+3]=16; }
-    engine=std::make_unique<GpuCompositor>(width(),height(),sender,threshold,softness);
+    engine=std::make_unique<GpuCompositor>(width(),height(),sender,key.load());
     mDevice.AutoCirculateStop(mConfig.fInputChannel); mDevice.AutoCirculateStop(mConfig.fOutputChannel);
     if(!mDevice.AutoCirculateInitForInput(mConfig.fInputChannel,mConfig.fInputFrames,NTV2_AUDIOSYSTEM_INVALID,0)
         || !mDevice.AutoCirculateInitForOutput(mConfig.fOutputChannel,mConfig.fOutputFrames,NTV2_AUDIOSYSTEM_INVALID,0)) return AJA_STATUS_INITIALIZE;
@@ -74,6 +74,7 @@ void Runtime::capture() {
             if(!reservation) { std::lock_guard lock(statsMutex); ++stats.poolFull; continue; }
             auto& frame=reservation->get();
             const auto begin=std::chrono::steady_clock::now();
+            engine->setKey(key.load(std::memory_order_relaxed)); // live tuning; lock-free, never waits
             frame.composite=engine->render(mFormatDesc.GetTopVisibleRowAddress(camera),mFormatDesc.GetBytesPerRow(),frame.bytes.data());
             sdi_profile::record(sdi_profile::Kind::Processing,begin);
             frame.cameraSequence=sequence; frame.cameraReadyNs=ready;
